@@ -1,18 +1,25 @@
-// =================== ES Module Imports ===================
+// server.js (ES Module for Railway)
 import express from "express";
 import cors from "cors";
 import fs from "fs";
-import csv from "csv-parser"; // npm install csv-parser
+import path from "path";
+import { fileURLToPath } from "url";
+import csv from "csv-parser";
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// =================== Utilities ===================
+// ES module __dirname fix
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Utility to convert degrees to radians
 function toRadians(deg) {
   return (deg * Math.PI) / 180;
 }
 
+// Haversine distance in meters
 function haversine(lat1, lon1, lat2, lon2) {
   const R = 6371000;
   const φ1 = toRadians(lat1);
@@ -26,9 +33,10 @@ function haversine(lat1, lon1, lat2, lon2) {
   return R * c;
 }
 
-// =================== Load CSV ===================
+// Load CSV Dataset into Memory
 let measurements = [];
-fs.createReadStream("norwich_cleaned_data.csv")
+const csvPath = path.join(__dirname, "norwich_cleaned_data.csv"); // Railway-friendly path
+fs.createReadStream(csvPath)
   .pipe(csv())
   .on("data", (row) => {
     const lat = parseFloat(row.latitude?.trim());
@@ -44,7 +52,7 @@ fs.createReadStream("norwich_cleaned_data.csv")
     console.log(`✅ Loaded ${measurements.length} rows from CSV dataset`);
   });
 
-// =================== Hex Grid Function ===================
+// Generate Hex Grid
 function generateHexGrid(centerLat, centerLon, areaWidthKm, areaHeightKm, hexSizeKm, userLat, userLon, network, operator) {
   const degPerKmLat = 1 / 111;
   const degPerKmLon = 1 / (111 * Math.cos(toRadians(centerLat)));
@@ -77,19 +85,20 @@ function generateHexGrid(centerLat, centerLon, areaWidthKm, areaHeightKm, hexSiz
     }
   }
 
-  let nearestData = null;
-  let minDist = Infinity;
-  for (const m of measurements) {
-    if (m.operator.toLowerCase() === operator.toLowerCase()) {
-      const dist = haversine(userLat, userLon, m.lat, m.lon);
-      if (dist < minDist) {
-        minDist = dist;
-        nearestData = m;
+  const features = hexCenters.map(([lon, lat]) => {
+    let nearestHexData = null;
+    let minDistHex = Infinity;
+
+    for (const m of measurements) {
+      if (m.operator.toLowerCase() === operator.toLowerCase()) {
+        const dist = haversine(lat, lon, m.lat, m.lon);
+        if (dist < minDistHex) {
+          minDistHex = dist;
+          nearestHexData = m;
+        }
       }
     }
-  }
 
-  const features = hexCenters.map(([lon, lat]) => {
     const hexCoords = [];
     for (let j = 0; j < 6; j++) {
       hexCoords.push([
@@ -98,42 +107,29 @@ function generateHexGrid(centerLat, centerLon, areaWidthKm, areaHeightKm, hexSiz
       ]);
     }
     hexCoords.push(hexCoords[0]);
+
     return {
       type: "Feature",
       geometry: { type: "Polygon", coordinates: [hexCoords] },
-      properties: {
-        value: nearestData ? nearestData.rsrp : null,
-        center: [lon, lat],
-        isNearest: nearestData && lon === nearestData.lon && lat === nearestData.lat,
-      },
+      properties: { value: nearestHexData?.rsrp || null, center: [lon, lat] },
     };
   });
 
-  return {
-    type: "FeatureCollection",
-    features,
-    nearest: nearestData ? { center: [nearestData.lon, nearestData.lat], value: nearestData.rsrp } : null,
-  };
+  return { type: "FeatureCollection", features };
 }
 
-// =================== API Endpoint ===================
+// API Endpoint
 app.post("/api/generate-hexgrid", (req, res) => {
   const { lat, lon, width, height, hex_size, user_lat, user_lon, network, operator } = req.body;
 
   if (![lat, lon, width, height, hex_size, user_lat, user_lon].every((val) => typeof val === "number")) {
-    return res.status(400).json({
-      error: "Invalid input. Latitude, longitude, width, height, and hex size must be numbers.",
-    });
+    return res.status(400).json({ error: "Latitude, longitude, width, height, and hex size must be numbers." });
   }
 
   const result = generateHexGrid(lat, lon, width, height, hex_size, user_lat, user_lon, network, operator);
-
-  console.log("Nearest point found:", result.nearest);
-  console.log("Nearest RSRP:", result.nearest ? result.nearest.value : "NO MATCH");
-
   res.json(result);
 });
 
-// =================== Start Server ===================
+// Start Server
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`✅ Backend running on http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`✅ Backend running on port ${PORT}`));
